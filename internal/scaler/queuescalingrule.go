@@ -11,7 +11,13 @@ type Decision struct {
 
 var queueSizeHistory []int64
 
-func CalculateDecision(cpuUsage float64) Decision {
+func CalculateDecision(cpuUsage float64, throughput *ThroughputWindow) Decision {
+	if throughput == nil {
+		return Decision{
+			Reason: "throughput window is not initialized",
+		}
+	}
+
 	queueSize := int64(kafka.CurrentConsumerLag())
 
 	queueSizeHistory = append(queueSizeHistory, queueSize)
@@ -21,24 +27,34 @@ func CalculateDecision(cpuUsage float64) Decision {
 
 	growing := isQueueGrowing(queueSizeHistory)
 
-	if queueSize >= 100 && growing && cpuUsage > 85 {
+	incomingRate := throughput.AverageIncomingRate()
+	processedRate := throughput.AverageProcessedRate()
+	fallingBehind := incomingRate > processedRate
+	cpuUnknown := cpuUsage < 0
+
+	if queueSize >= 100 && growing && fallingBehind && cpuUsage > 85 {
 		return Decision{
 			EnableBackpressure: true,
-			Reason:"lag is very high, queue is growing, and CPU is unhealthy",
+			Reason:             "lag is very high, queue is growing, workers are falling behind, and CPU is unhealthy",
 		}
 	}
 
-	if queueSize >= 70 && growing && cpuUsage < 75 {
+	if queueSize >= 70 && growing && fallingBehind && (cpuUnknown || cpuUsage < 75) {
+		reason := "lag is high, queue is growing, workers are falling behind, and CPU is healthy enough to scale up"
+		if cpuUnknown {
+			reason = "lag is high, queue is growing, workers are falling behind, and CPU usage is unknown"
+		}
+
 		return Decision{
 			ScaleUp: true,
-			Reason:  "lag is high, queue is growing, and CPU is healthy enough to scale up",
+			Reason:  reason,
 		}
 	}
 
-	if queueSize <= 20 && !growing {
+	if queueSize <= 20 && !growing && incomingRate <= processedRate {
 		return Decision{
 			ScaleDown: true,
-			Reason:    "lag is low and queue is stable",
+			Reason:    "lag is low, queue is stable, and workers are keeping up",
 		}
 	}
 

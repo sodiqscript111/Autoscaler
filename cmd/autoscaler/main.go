@@ -3,118 +3,233 @@ package main
 import (
 	"context"
 	"fmt"
+	"os"
+	"os/signal"
+	"sync"
 	"sync/atomic"
+	"syscall"
 	"time"
 
 	"autoscaler/internal/api"
 	"autoscaler/internal/kafka"
+	"autoscaler/internal/scaler"
 
 	"github.com/gin-gonic/gin"
 	kafkago "github.com/segmentio/kafka-go"
 )
 
-var (
-	normalThroughput    = 1000
-	throughputState     = 0 // -1 = below normal, 0 = normal, 1 = above normal
-	batchSize           = 100
-	idealQueueSize      = 100
-	processedThisSecond atomic.Int64
+const (
+	initialWorkers = 1
+	minWorkers     = 1
+	maxWorkers     = 8
+
+	initialBatchSize = 100
+	minBatchSize     = 10
+	maxBatchSize     = 500
+	batchStep        = 25
 )
 
+var currentBatchSize atomic.Int64
+
 func main() {
+	currentBatchSize.Store(initialBatchSize)
+
 	kafka.InitKafkaWriter()
 	kafka.InitKafkaReader()
 	defer kafka.CloseKafkaWriter()
 	defer kafka.CloseKafkaReader()
 
-	go worker()
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+
+	throughput := scaler.NewThroughputWindow(5, time.Second)
+	api.ConfigureRuntime(throughput)
+
+	stopThroughput := make(chan struct{})
+	go throughput.Start(stopThroughput)
+	defer close(stopThroughput)
+
+	workers := newWorkerPool(ctx, throughput)
+	workers.ScaleTo(initialWorkers)
+	defer workers.Stop()
 
 	r := gin.Default()
 	r.POST("/events", api.Injectionpoint)
-	go r.Run(":8080") // Important: Run gin asynchronously to avoid blocking main ticker
+	go func() {
+		if err := r.Run(":8080"); err != nil {
+			fmt.Println("api server error:", err)
+			stop()
+		}
+	}()
 
-	ticker := time.NewTicker(1 * time.Second)
+	ticker := time.NewTicker(time.Second)
 	defer ticker.Stop()
 
-	for range ticker.C {
-		currentThroughput := processedThisSecond.Swap(0)
-
-		stats := kafka.ReaderStats()
-		queueSize := int(stats.Lag)
-		if queueSize < 0 {
-			queueSize = 0
-		}
-
-		queueLag := checkQueueLag(queueSize)
-
-		increaseOrDecreaseThroughput(int(currentThroughput))
-
-		fmt.Printf(
-			"throughput=%d msg/s | queueSize=%d | queueLag=%v | state=%d | batchSize=%d\n",
-			currentThroughput,
-			queueSize,
-			queueLag,
-			throughputState,
-			batchSize,
-		)
-	}
-}
-
-func checkQueueLag(queueSize int) bool {
-	return queueSize > idealQueueSize
-}
-
-func increaseOrDecreaseThroughput(currentThroughput int) {
-	upperThreshold := int(float64(normalThroughput) * 1.2) // 20% above normal
-	lowerThreshold := int(float64(normalThroughput) * 0.8) // 20% below normal
-
-	switch {
-	case currentThroughput > upperThreshold:
-		throughputState = 1
-		// throughput is high, maybe increase workers if queue is also growing
-	case currentThroughput < lowerThreshold:
-		throughputState = -1
-		// throughput is low, maybe decrease workers if backlog is low too
-	default:
-		throughputState = 0
-	}
-}
-
-func worker() {
 	for {
-		batch := make([]kafkago.Message, 0, batchSize)
-		ctx := context.Background()
+		select {
+		case <-ticker.C:
+			cpuUsage := currentCPUUsage()
+			decision := scaler.CalculateDecision(cpuUsage, throughput)
+			applyDecision(workers, decision)
+			printStatus(workers, throughput, decision, cpuUsage)
+		case <-ctx.Done():
+			return
+		}
+	}
+}
 
-		// block until at least one item is available
+type workerPool struct {
+	rootCtx    context.Context
+	throughput *scaler.ThroughputWindow
+
+	mu      sync.Mutex
+	cancels []context.CancelFunc
+}
+
+func newWorkerPool(rootCtx context.Context, throughput *scaler.ThroughputWindow) *workerPool {
+	return &workerPool{
+		rootCtx:    rootCtx,
+		throughput: throughput,
+	}
+}
+
+func (p *workerPool) ScaleTo(target int) {
+	target = clamp(target, minWorkers, maxWorkers)
+
+	p.mu.Lock()
+	defer p.mu.Unlock()
+
+	for len(p.cancels) < target {
+		workerCtx, cancel := context.WithCancel(p.rootCtx)
+		p.cancels = append(p.cancels, cancel)
+		workerID := len(p.cancels)
+		go p.runWorker(workerCtx, workerID)
+	}
+
+	for len(p.cancels) > target {
+		last := len(p.cancels) - 1
+		p.cancels[last]()
+		p.cancels = p.cancels[:last]
+	}
+}
+
+func (p *workerPool) Count() int {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+
+	return len(p.cancels)
+}
+
+func (p *workerPool) Stop() {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+
+	for _, cancel := range p.cancels {
+		cancel()
+	}
+	p.cancels = nil
+}
+
+func (p *workerPool) runWorker(ctx context.Context, workerID int) {
+	for {
+		batch := make([]kafkago.Message, 0, int(currentBatchSize.Load()))
+
 		item, err := kafka.FetchMessage(ctx)
-		if err == nil {
-			batch = append(batch, item)
-		} else {
-			time.Sleep(100 * time.Millisecond) // Sleep on error to avoid tight loop
+		if err != nil {
+			if ctx.Err() != nil {
+				return
+			}
+			time.Sleep(100 * time.Millisecond)
 			continue
 		}
+		batch = append(batch, item)
 
-		ctxTimeout, cancel := context.WithTimeout(ctx, 10*time.Millisecond)
-		// try to fill the rest of the batch without blocking forever
-		for len(batch) < batchSize {
-			item, err := kafka.FetchMessage(ctxTimeout)
+		fillCtx, cancel := context.WithTimeout(ctx, 10*time.Millisecond)
+		for len(batch) < int(currentBatchSize.Load()) {
+			item, err := kafka.FetchMessage(fillCtx)
 			if err != nil {
-				// timeout or error
 				break
 			}
 			batch = append(batch, item)
 		}
 		cancel()
 
-		if len(batch) > 0 {
-			// simulate processing time
-			time.Sleep(50 * time.Millisecond)
+		time.Sleep(50 * time.Millisecond)
 
-			// Commit messages in batch
-			if err := kafka.CommitMessages(ctx, batch...); err != nil {
-				fmt.Println("failed to commit messages:", err)
-			}
-			processedThisSecond.Add(int64(len(batch)))
+		commitCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
+		err = kafka.CommitMessages(commitCtx, batch...)
+		cancel()
+		if err != nil {
+			fmt.Printf("worker=%d failed to commit messages: %v\n", workerID, err)
+			continue
+		}
+
+		if p.throughput != nil {
+			p.throughput.AddProcessed(int64(len(batch)))
 		}
 	}
+}
+
+func applyDecision(workers *workerPool, decision scaler.Decision) {
+	api.SetBackpressureEnabled(decision.EnableBackpressure)
+
+	switch {
+	case decision.ScaleUp:
+		if workers.Count() >= maxWorkers && currentBatchSize.Load() >= maxBatchSize {
+			api.SetBackpressureEnabled(true)
+			return
+		}
+		workers.ScaleTo(workers.Count() + 1)
+		adjustBatchSize(batchStep)
+	case decision.ScaleDown:
+		workers.ScaleTo(workers.Count() - 1)
+		adjustBatchSize(-batchStep)
+	}
+}
+
+func adjustBatchSize(delta int64) {
+	next := currentBatchSize.Load() + delta
+	currentBatchSize.Store(int64(clamp(int(next), minBatchSize, maxBatchSize)))
+}
+
+func printStatus(workers *workerPool, throughput *scaler.ThroughputWindow, decision scaler.Decision, cpuUsage float64) {
+	snapshot := throughput.LatestSnapshot()
+	lag := kafka.CurrentConsumerLag()
+	if lag < 0 {
+		lag = 0
+	}
+
+	fmt.Printf(
+		"incoming=%d/s processed=%d/s lag=%d workers=%d batchSize=%d backpressure=%v cpu=%s decision=%q\n",
+		snapshot.IncomingRate,
+		snapshot.ProcessedRate,
+		lag,
+		workers.Count(),
+		currentBatchSize.Load(),
+		api.BackpressureEnabled(),
+		formatCPUUsage(cpuUsage),
+		decision.Reason,
+	)
+}
+
+func currentCPUUsage() float64 {
+	return -1
+}
+
+func formatCPUUsage(cpuUsage float64) string {
+	if cpuUsage < 0 {
+		return "unknown"
+	}
+
+	return fmt.Sprintf("%.1f%%", cpuUsage)
+}
+
+func clamp(value, min, max int) int {
+	if value < min {
+		return min
+	}
+	if value > max {
+		return max
+	}
+	return value
 }

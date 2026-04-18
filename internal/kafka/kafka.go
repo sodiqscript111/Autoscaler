@@ -15,7 +15,6 @@ import (
 var writer *kafkago.Writer
 var reader *kafkago.Reader
 
-
 const brokerAddress = "localhost:9094"
 
 func InitKafkaWriter() {
@@ -107,8 +106,7 @@ func FetchAndProcess(ctx context.Context) {
 	}
 
 	fmt.Printf("message: key=%s event=%+v\n", string(msg.Key), event)
-	
-	
+
 	if err := CommitMessages(ctx, msg); err != nil {
 		fmt.Println("commit error:", err)
 	}
@@ -120,4 +118,3 @@ func CurrentConsumerLag() int64 {
 	}
 	return ReaderStats().Lag
 }
-

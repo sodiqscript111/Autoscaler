@@ -38,11 +38,27 @@ func NewThroughputWindow(window int, interval time.Duration) *ThroughputWindow {
 }
 
 func (tw *ThroughputWindow) IncrementIncoming() {
-	tw.incomingCounter.Add(1)
+	tw.AddIncoming(1)
+}
+
+func (tw *ThroughputWindow) AddIncoming(count int64) {
+	if count <= 0 {
+		return
+	}
+
+	tw.incomingCounter.Add(count)
 }
 
 func (tw *ThroughputWindow) IncrementProcessed() {
-	tw.processedCounter.Add(1)
+	tw.AddProcessed(1)
+}
+
+func (tw *ThroughputWindow) AddProcessed(count int64) {
+	if count <= 0 {
+		return
+	}
+
+	tw.processedCounter.Add(count)
 }
 
 func (tw *ThroughputWindow) Start(stopCh <-chan struct{}) {
