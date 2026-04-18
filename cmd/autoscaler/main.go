@@ -42,6 +42,10 @@ func main() {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
+	if err := scaler.InitProcessMonitor(); err != nil {
+		fmt.Println("process monitor unavailable:", err)
+	}
+
 	throughput := scaler.NewThroughputWindow(5, time.Second)
 	api.ConfigureRuntime(throughput)
 
@@ -213,7 +217,13 @@ func printStatus(workers *workerPool, throughput *scaler.ThroughputWindow, decis
 }
 
 func currentCPUUsage() float64 {
-	return -1
+	metrics, err := scaler.CurrentProcessCPUAndMemory()
+	if err != nil {
+		fmt.Println("process metrics error:", err)
+		return -1
+	}
+
+	return metrics.CPUUsage
 }
 
 func formatCPUUsage(cpuUsage float64) string {
