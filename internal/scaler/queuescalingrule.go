@@ -24,7 +24,7 @@ func CalculateDecision(cpuUsage float64) Decision {
 	if queueSize >= 100 && growing && cpuUsage > 85 {
 		return Decision{
 			EnableBackpressure: true,
-			Reason:             "lag is very high, queue is growing, and CPU is unhealthy",
+			Reason:"lag is very high, queue is growing, and CPU is unhealthy",
 		}
 	}
 
