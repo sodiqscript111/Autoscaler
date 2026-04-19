@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"autoscaler/internal/api"
+	"autoscaler/internal/downstream"
 	"autoscaler/internal/kafka"
 	"autoscaler/internal/scaler"
 
@@ -22,6 +23,16 @@ type Config struct {
 	MinBatchSize     int
 	MaxBatchSize     int
 	BatchStep        int
+	Processor        BatchProcessor
+	Downstream       *downstream.Monitor
+}
+
+type BatchProcessor interface {
+	ProcessBatch(ctx context.Context, batch []kafkago.Message) error
+}
+
+type SleepProcessor struct {
+	Latency time.Duration
 }
 
 type State struct {
@@ -34,6 +45,8 @@ type Manager struct {
 	rootCtx    context.Context
 	throughput *scaler.ThroughputWindow
 	config     Config
+	processor  BatchProcessor
+	downstream *downstream.Monitor
 
 	currentBatchSize atomic.Int64
 
@@ -48,33 +61,49 @@ func NewManager(rootCtx context.Context, throughput *scaler.ThroughputWindow, co
 		rootCtx:    rootCtx,
 		throughput: throughput,
 		config:     config,
+		processor:  config.Processor,
+		downstream: config.Downstream,
 	}
 	manager.currentBatchSize.Store(int64(config.InitialBatchSize))
 	manager.ScaleTo(config.InitialWorkers)
+	fmt.Printf("[manager] started workers=%d batchSize=%d\n", manager.Count(), manager.BatchSize())
 
 	return manager
 }
 
 func (m *Manager) ApplyDecision(decision scaler.Decision) {
+	before := m.State()
+
 	if decision.EnableBackpressure {
 		api.SetBackpressureEnabled(true)
+		if !before.BackpressureEnabled {
+			fmt.Printf("[manager] backpressure enabled reason=%q\n", decision.Reason)
+		}
 		return
 	}
 
+	if before.BackpressureEnabled {
+		fmt.Printf("[manager] backpressure disabled reason=%q\n", decision.Reason)
+	}
 	api.SetBackpressureEnabled(false)
 
 	switch {
 	case decision.ScaleUp:
 		if m.Count() >= m.config.MaxWorkers && m.BatchSize() >= int64(m.config.MaxBatchSize) {
 			api.SetBackpressureEnabled(true)
+			fmt.Printf("[manager] backpressure enabled reason=%q workers=%d batchSize=%d\n", "scale-up requested but worker and batch limits are maxed out", m.Count(), m.BatchSize())
 			return
 		}
 
 		m.ScaleTo(m.Count() + 1)
 		m.adjustBatchSize(m.config.BatchStep)
+		after := m.State()
+		fmt.Printf("[manager] scale_up workers=%d->%d batchSize=%d->%d reason=%q\n", before.Workers, after.Workers, before.BatchSize, after.BatchSize, decision.Reason)
 	case decision.ScaleDown:
 		m.ScaleTo(m.Count() - 1)
 		m.adjustBatchSize(-m.config.BatchStep)
+		after := m.State()
+		fmt.Printf("[manager] scale_down workers=%d->%d batchSize=%d->%d reason=%q\n", before.Workers, after.Workers, before.BatchSize, after.BatchSize, decision.Reason)
 	}
 }
 
@@ -151,7 +180,10 @@ func (m *Manager) runWorker(ctx context.Context, workerID int) {
 		}
 		cancel()
 
-		time.Sleep(50 * time.Millisecond)
+		if err := m.processBatch(ctx, batch); err != nil {
+			fmt.Printf("worker=%d failed to process messages: %v\n", workerID, err)
+			continue
+		}
 
 		commitCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
 		err = kafka.CommitMessages(commitCtx, batch...)
@@ -164,6 +196,51 @@ func (m *Manager) runWorker(ctx context.Context, workerID int) {
 		if m.throughput != nil {
 			m.throughput.AddProcessed(int64(len(batch)))
 		}
+	}
+}
+
+func (m *Manager) processBatch(ctx context.Context, batch []kafkago.Message) error {
+	processor := m.processor
+	if processor == nil {
+		processor = SleepProcessor{Latency: 50 * time.Millisecond}
+	}
+
+	started := time.Now()
+	err := processor.ProcessBatch(ctx, batch)
+
+	if m.downstream != nil {
+		sample := downstream.Sample{
+			Name:      "worker-processor",
+			Kind:      downstream.KindWorker,
+			Operation: "process_batch",
+			Policy:    downstream.PolicyProtective,
+			Duration:  time.Since(started),
+			Success:   err == nil,
+			Timestamp: time.Now(),
+		}
+		if err != nil {
+			sample.Error = err.Error()
+		}
+		m.downstream.Record(sample)
+	}
+
+	return err
+}
+
+func (p SleepProcessor) ProcessBatch(ctx context.Context, batch []kafkago.Message) error {
+	latency := p.Latency
+	if latency <= 0 {
+		latency = 50 * time.Millisecond
+	}
+
+	timer := time.NewTimer(latency)
+	defer timer.Stop()
+
+	select {
+	case <-timer.C:
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
 	}
 }
 
@@ -194,6 +271,9 @@ func withDefaults(config Config) Config {
 	}
 	if config.BatchStep <= 0 {
 		config.BatchStep = 25
+	}
+	if config.Processor == nil {
+		config.Processor = SleepProcessor{Latency: 50 * time.Millisecond}
 	}
 
 	config.InitialWorkers = clamp(config.InitialWorkers, config.MinWorkers, config.MaxWorkers)
