@@ -4,6 +4,28 @@ This project is a queue-driven autoscaler demo that accepts events over HTTP, wr
 
 ## Architecture
 
+```mermaid
+flowchart LR
+    Client["Client / Producer"] --> API["Gin API<br/>POST /events"]
+    API --> Kafka["Kafka Topic"]
+    Kafka --> Workers["Dynamic Worker Pool"]
+    Workers --> Mongo["MongoDB<br/>durable storage"]
+    Workers --> Redis["Redis<br/>TTL cache"]
+
+    Kafka --> Metrics["Lag + Throughput"]
+    Workers --> Metrics
+    Proc["Process CPU"] --> Metrics
+    Mongo --> Health["Downstream Health Monitor"]
+    Redis --> Health
+    Workers --> Health
+
+    Metrics --> Brain["Autoscaler Decision Engine"]
+    Health --> Brain
+    Brain --> Actions["scale_up / scale_down / backpressure / none"]
+    Actions --> Workers
+    Actions --> API
+```
+
 The runtime flow is:
 
 1. `POST /events` accepts an event and writes it to Kafka.
@@ -152,6 +174,20 @@ Example event payload:
 If `id` or `timestamp` is omitted, the API fills them in automatically.
 
 ## Decision pipeline
+
+```mermaid
+flowchart TD
+    Start["Tick interval"] --> Inputs["Collect lag, queue trend, throughput, CPU, downstream state"]
+    Inputs --> Critical{"Critical downstream unhealthy<br/>and lag very high?"}
+    Critical -- Yes --> Backpressure["Enable backpressure"]
+    Critical -- No --> Protected{"Lag high and workers falling behind<br/>but downstream degraded/unhealthy?"}
+    Protected -- Yes --> Suppress["Suppress scale-up"]
+    Protected -- No --> ScaleUp{"Lag high, queue growing,<br/>and CPU healthy enough?"}
+    ScaleUp -- Yes --> Up["Scale up workers and batch size"]
+    ScaleUp -- No --> ScaleDown{"Lag low and workers keeping up?"}
+    ScaleDown -- Yes --> Down["Scale down workers and batch size"]
+    ScaleDown -- No --> None["No action"]
+```
 
 The scaler uses:
 
