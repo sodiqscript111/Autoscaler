@@ -29,6 +29,7 @@ const (
 const (
 	KindGeneric = "generic"
 	KindHTTP    = "http"
+	KindMongoDB = "mongodb"
 	KindRedis   = "redis"
 	KindSQL     = "sql"
 	KindWorker  = "worker"

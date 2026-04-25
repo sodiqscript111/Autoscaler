@@ -30,6 +30,16 @@ func (d Decision) Action() string {
 var queueSizeHistory []int64
 var downstreamProtectionUntil time.Time
 
+type Policy struct {
+	ScaleUpLagThreshold      int64
+	BackpressureLagThreshold int64
+	ScaleDownLagThreshold    int64
+	CPUScaleUpThreshold      float64
+	CPUBackpressureThreshold float64
+	QueueGrowthWindow        int
+	QueueGrowthIncreaseCount int
+}
+
 type DecisionContext struct {
 	CPUUsage           float64
 	Throughput         *ThroughputWindow
@@ -37,6 +47,7 @@ type DecisionContext struct {
 	Downstream         downstream.Status
 	DownstreamCooldown time.Duration
 	Now                time.Time
+	Policy             Policy
 }
 
 func CalculateDecision(cpuUsage float64, throughput *ThroughputWindow) Decision {
@@ -62,15 +73,16 @@ func CalculateDecisionWithContext(input DecisionContext) Decision {
 	if input.DownstreamCooldown <= 0 {
 		input.DownstreamCooldown = 30 * time.Second
 	}
+	input.Policy = withPolicyDefaults(input.Policy)
 
 	queueSize := input.QueueSize
 
 	queueSizeHistory = append(queueSizeHistory, queueSize)
-	if len(queueSizeHistory) > 5 {
-		queueSizeHistory = queueSizeHistory[len(queueSizeHistory)-5:]
+	if len(queueSizeHistory) > input.Policy.QueueGrowthWindow {
+		queueSizeHistory = queueSizeHistory[len(queueSizeHistory)-input.Policy.QueueGrowthWindow:]
 	}
 
-	growing := isQueueGrowing(queueSizeHistory)
+	growing := isQueueGrowing(queueSizeHistory, input.Policy.QueueGrowthIncreaseCount)
 
 	incomingRate := input.Throughput.AverageIncomingRate()
 	processedRate := input.Throughput.AverageProcessedRate()
@@ -84,7 +96,7 @@ func CalculateDecisionWithContext(input DecisionContext) Decision {
 	downstreamProtecting := downstreamDegraded || downstreamUnhealthy
 	downstreamCritical := downstreamPolicy == downstream.PolicyCritical
 
-	if queueSize >= 100 && growing && fallingBehind && downstreamUnhealthy && downstreamCritical {
+	if queueSize >= input.Policy.BackpressureLagThreshold && growing && fallingBehind && downstreamUnhealthy && downstreamCritical {
 		markDownstreamProtection(input.Now, input.DownstreamCooldown)
 		return Decision{
 			EnableBackpressure: true,
@@ -92,14 +104,14 @@ func CalculateDecisionWithContext(input DecisionContext) Decision {
 		}
 	}
 
-	if queueSize >= 100 && growing && fallingBehind && input.CPUUsage > 85 {
+	if queueSize >= input.Policy.BackpressureLagThreshold && growing && fallingBehind && input.CPUUsage > input.Policy.CPUBackpressureThreshold {
 		return Decision{
 			EnableBackpressure: true,
 			Reason:             "lag is very high, queue is growing, workers are falling behind, and CPU is unhealthy",
 		}
 	}
 
-	if queueSize >= 70 && growing && fallingBehind && downstreamProtecting {
+	if queueSize >= input.Policy.ScaleUpLagThreshold && growing && fallingBehind && downstreamProtecting {
 		reason := "lag is high and workers are falling behind, but downstream is not healthy so scale-up is suppressed"
 		if input.Now.Before(downstreamProtectionUntil) {
 			reason = "downstream protection cooldown is active; scale-up remains suppressed"
@@ -111,7 +123,7 @@ func CalculateDecisionWithContext(input DecisionContext) Decision {
 		}
 	}
 
-	if queueSize >= 70 && growing && fallingBehind && (cpuUnknown || input.CPUUsage < 75) {
+	if queueSize >= input.Policy.ScaleUpLagThreshold && growing && fallingBehind && (cpuUnknown || input.CPUUsage < input.Policy.CPUScaleUpThreshold) {
 		reason := "lag is high, queue is growing, workers are falling behind, and CPU is healthy enough to scale up"
 		if cpuUnknown {
 			reason = "lag is high, queue is growing, workers are falling behind, and CPU usage is unknown"
@@ -123,7 +135,7 @@ func CalculateDecisionWithContext(input DecisionContext) Decision {
 		}
 	}
 
-	if queueSize <= 20 && !growing && incomingRate <= processedRate {
+	if queueSize <= input.Policy.ScaleDownLagThreshold && !growing && incomingRate <= processedRate {
 		return Decision{
 			ScaleDown: true,
 			Reason:    "lag is low, queue is stable, and workers are keeping up",
@@ -166,8 +178,8 @@ func downstreamDecisionReason(reason string, status downstream.Status) string {
 	return reason + ": " + status.Kind + "/" + status.Name + "/" + status.Operation
 }
 
-func isQueueGrowing(history []int64) bool {
-	if len(history) < 5 {
+func isQueueGrowing(history []int64, increaseCountThreshold int) bool {
+	if len(history) < 2 {
 		return false
 	}
 
@@ -179,5 +191,34 @@ func isQueueGrowing(history []int64) bool {
 		}
 	}
 
-	return increaseCount >= 3
+	return increaseCount >= increaseCountThreshold
+}
+
+func withPolicyDefaults(policy Policy) Policy {
+	if policy.ScaleUpLagThreshold <= 0 {
+		policy.ScaleUpLagThreshold = 70
+	}
+	if policy.BackpressureLagThreshold <= 0 {
+		policy.BackpressureLagThreshold = 100
+	}
+	if policy.ScaleDownLagThreshold < 0 {
+		policy.ScaleDownLagThreshold = 20
+	}
+	if policy.ScaleDownLagThreshold == 0 {
+		policy.ScaleDownLagThreshold = 20
+	}
+	if policy.CPUScaleUpThreshold <= 0 {
+		policy.CPUScaleUpThreshold = 75
+	}
+	if policy.CPUBackpressureThreshold <= 0 {
+		policy.CPUBackpressureThreshold = 85
+	}
+	if policy.QueueGrowthWindow <= 1 {
+		policy.QueueGrowthWindow = 5
+	}
+	if policy.QueueGrowthIncreaseCount <= 0 {
+		policy.QueueGrowthIncreaseCount = 3
+	}
+
+	return policy
 }

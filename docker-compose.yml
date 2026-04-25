@@ -42,6 +42,59 @@ services:
     networks:
       - autoscaler-network
 
+  mongodb:
+    image: mongo:8.0
+    container_name: autoscaler-mongodb
+    ports:
+      - "27017:27017"
+    volumes:
+      - mongodb-data:/data/db
+    networks:
+      - autoscaler-network
+    healthcheck:
+      test: ["CMD-SHELL", "echo 'db.runCommand({ ping: 1 })' | mongosh mongodb://localhost:27017/test --quiet"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+      start_period: 10s
+
+  redis:
+    image: redis:7.4-alpine
+    container_name: autoscaler-redis
+    ports:
+      - "6379:6379"
+    command: ["redis-server", "--save", "", "--appendonly", "no"]
+    networks:
+      - autoscaler-network
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+      start_period: 5s
+
+  autoscaler:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: autoscaler-app
+    depends_on:
+      kafka-init:
+        condition: service_completed_successfully
+      mongodb:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    environment:
+      - AUTOSCALER_CONFIG=/app/config.docker.yaml
+    ports:
+      - "8080:8080"
+    networks:
+      - autoscaler-network
+
+volumes:
+  mongodb-data:
+
 networks:
   autoscaler-network:
     driver: bridge

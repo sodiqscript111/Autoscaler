@@ -15,21 +15,34 @@ import (
 var writer *kafkago.Writer
 var reader *kafkago.Reader
 
-const brokerAddress = "localhost:9094"
-
-func InitKafkaWriter() {
+func InitKafkaWriter(brokers []string, configuredTopic string) {
+	if len(brokers) == 0 {
+		brokers = []string{"localhost:9094"}
+	}
+	if configuredTopic == "" {
+		configuredTopic = "events"
+	}
 	writer = &kafkago.Writer{
-		Addr:     kafkago.TCP(brokerAddress),
-		Topic:    "events",
+		Addr:     kafkago.TCP(brokers...),
+		Topic:    configuredTopic,
 		Balancer: &kafkago.LeastBytes{},
 	}
 }
 
-func InitKafkaReader() {
+func InitKafkaReader(brokers []string, configuredTopic, groupID string) {
+	if len(brokers) == 0 {
+		brokers = []string{"localhost:9094"}
+	}
+	if configuredTopic == "" {
+		configuredTopic = "events"
+	}
+	if groupID == "" {
+		groupID = "autoscaler-group"
+	}
 	reader = kafkago.NewReader(kafkago.ReaderConfig{
-		Brokers: []string{brokerAddress},
-		Topic:   "events",
-		GroupID: "autoscaler-group",
+		Brokers: brokers,
+		Topic:   configuredTopic,
+		GroupID: groupID,
 	})
 }
 

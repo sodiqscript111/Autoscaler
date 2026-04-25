@@ -1,0 +1,65 @@
+api:
+  address: ":8080"
+
+kafka:
+  brokers:
+    - "localhost:9094"
+  topic: "events"
+  group_id: "autoscaler-group"
+
+workers:
+  initial_workers: 1
+  min_workers: 1
+  max_workers: 8
+  initial_batch_size: 100
+  min_batch_size: 10
+  max_batch_size: 500
+  batch_step: 25
+
+processing:
+  redis_cache_ttl: 15m
+  redis_key_prefix: "autoscaler:event:"
+
+mongodb:
+  uri: "mongodb://localhost:27017"
+  database: "autoscaler"
+  collection: "events"
+  connect_timeout: 5s
+  health_check_enabled: true
+  health_check_interval: 1s
+  policy: "critical"
+
+redis:
+  addr: "localhost:6379"
+  password: ""
+  db: 0
+  connect_timeout: 500ms
+  health_check_enabled: true
+  health_check_interval: 1s
+  health_check_timeout: 500ms
+  policy: "protective"
+
+downstream:
+  enabled: true
+  observe_only: false
+  degraded_latency: 250ms
+  unhealthy_latency: 1s
+  degraded_error_rate: 0.05
+  unhealthy_error_rate: 0.20
+  minimum_samples_for_state: 3
+  degraded_consecutive_windows: 2
+  unhealthy_consecutive_windows: 2
+  healthy_consecutive_windows: 3
+  decision_cooldown: 30s
+
+scaling:
+  tick_interval: 1s
+  throughput_window_size: 5
+  throughput_interval: 1s
+  scale_up_lag_threshold: 70
+  backpressure_lag_threshold: 100
+  scale_down_lag_threshold: 20
+  cpu_scale_up_threshold: 75
+  cpu_backpressure_threshold: 85
+  queue_growth_window: 5
+  queue_growth_increase_count: 3

@@ -3,6 +3,7 @@ package api
 import (
 	"net/http"
 	"sync/atomic"
+	"time"
 
 	"autoscaler/internal/kafka"
 	"autoscaler/internal/model"
@@ -39,6 +40,12 @@ func Injectionpoint(c *gin.Context) {
 	if err := c.ShouldBindJSON(&event); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 		return
+	}
+	if event.ID == 0 {
+		event.ID = time.Now().UnixNano()
+	}
+	if event.Timestamp.IsZero() {
+		event.Timestamp = time.Now().UTC()
 	}
 
 	if err := kafka.WriteToKafka(event); err != nil {
