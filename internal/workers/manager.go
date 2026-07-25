@@ -71,7 +71,7 @@ func NewManager(rootCtx context.Context, throughput *scaler.ThroughputWindow, co
 	return manager
 }
 
-func (m *Manager) ApplyDecision(decision scaler.Decision) {
+func (m *Manager) ApplyDecision(decision scaler.Decision) (maxedOut, minOut bool) {
 	before := m.State()
 
 	if decision.EnableBackpressure {
@@ -79,7 +79,7 @@ func (m *Manager) ApplyDecision(decision scaler.Decision) {
 		if !before.BackpressureEnabled {
 			fmt.Printf("[manager] backpressure enabled reason=%q\n", decision.Reason)
 		}
-		return
+		return false, false
 	}
 
 	if before.BackpressureEnabled {
@@ -90,9 +90,8 @@ func (m *Manager) ApplyDecision(decision scaler.Decision) {
 	switch {
 	case decision.ScaleUp:
 		if m.Count() >= m.config.MaxWorkers && m.BatchSize() >= int64(m.config.MaxBatchSize) {
-			api.SetBackpressureEnabled(true)
-			fmt.Printf("[manager] backpressure enabled reason=%q workers=%d batchSize=%d\n", "scale-up requested but worker and batch limits are maxed out", m.Count(), m.BatchSize())
-			return
+			maxedOut = true
+			return maxedOut, minOut
 		}
 
 		m.ScaleTo(m.Count() + 1)
@@ -100,11 +99,17 @@ func (m *Manager) ApplyDecision(decision scaler.Decision) {
 		after := m.State()
 		fmt.Printf("[manager] scale_up workers=%d->%d batchSize=%d->%d reason=%q\n", before.Workers, after.Workers, before.BatchSize, after.BatchSize, decision.Reason)
 	case decision.ScaleDown:
+		if m.Count() <= m.config.MinWorkers && m.BatchSize() <= int64(m.config.MinBatchSize) {
+			minOut = true
+			return maxedOut, minOut
+		}
+
 		m.ScaleTo(m.Count() - 1)
 		m.adjustBatchSize(-m.config.BatchStep)
 		after := m.State()
 		fmt.Printf("[manager] scale_down workers=%d->%d batchSize=%d->%d reason=%q\n", before.Workers, after.Workers, before.BatchSize, after.BatchSize, decision.Reason)
 	}
+	return false, false
 }
 
 func (m *Manager) ScaleTo(target int) {
@@ -146,7 +151,7 @@ func (m *Manager) State() State {
 	}
 }
 
-func (m *Manager) Stop() {
+func (m *Manager) Shutdown() {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 

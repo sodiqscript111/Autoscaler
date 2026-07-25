@@ -50,18 +50,7 @@ func (c *RedisChecker) Start(ctx context.Context) {
 		return
 	}
 
-	ticker := time.NewTicker(c.config.Interval)
-	defer ticker.Stop()
-
-	c.checkOnce(ctx)
-	for {
-		select {
-		case <-ticker.C:
-			c.checkOnce(ctx)
-		case <-ctx.Done():
-			return
-		}
-	}
+	runCheckerLoop(ctx, c.config.Interval, c.checkOnce)
 }
 
 func (c *RedisChecker) checkOnce(ctx context.Context) {
@@ -74,18 +63,5 @@ func (c *RedisChecker) checkOnce(ctx context.Context) {
 	})
 	err := client.Ping(ctx)
 
-	sample := Sample{
-		Name:      c.config.Name,
-		Kind:      KindRedis,
-		Operation: "ping",
-		Policy:    c.config.Policy,
-		Duration:  time.Since(started),
-		Success:   err == nil,
-		Timestamp: time.Now(),
-	}
-	if err != nil {
-		sample.Error = err.Error()
-	}
-
-	c.monitor.Record(sample)
+	c.monitor.RecordPing(c.config.Name, KindRedis, c.config.Policy, time.Since(started), err)
 }

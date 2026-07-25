@@ -55,12 +55,12 @@ func (c *Client) Set(ctx context.Context, key, value string, ttl time.Duration) 
 	}
 	defer conn.Close()
 
-	ttlMillis := strconv.FormatInt(ttl.Milliseconds(), 10)
 	if ttl <= 0 {
 		if err := writeCommand(conn, "SET", key, value); err != nil {
 			return err
 		}
 	} else {
+		ttlMillis := strconv.FormatInt(ttl.Milliseconds(), 10)
 		if err := writeCommand(conn, "SET", key, value, "PX", ttlMillis); err != nil {
 			return err
 		}
@@ -69,17 +69,50 @@ func (c *Client) Set(ctx context.Context, key, value string, ttl time.Duration) 
 	return readSimpleResponse(reader)
 }
 
+func (c *Client) SetNX(ctx context.Context, key, value string, ttl time.Duration) (bool, error) {
+	conn, reader, err := c.open(ctx)
+	if err != nil {
+		return false, err
+	}
+	defer conn.Close()
+
+	if ttl <= 0 {
+		if err := writeCommand(conn, "SET", key, value, "NX"); err != nil {
+			return false, err
+		}
+	} else {
+		ttlMillis := strconv.FormatInt(ttl.Milliseconds(), 10)
+		if err := writeCommand(conn, "SET", key, value, "PX", ttlMillis, "NX"); err != nil {
+			return false, err
+		}
+	}
+
+	line, err := reader.ReadString('\n')
+	if err != nil {
+		return false, err
+	}
+	line = strings.TrimRight(line, "\r\n")
+
+	if line == "$-1" {
+		return false, nil
+	}
+	if line == "+OK" {
+		return true, nil
+	}
+	return false, fmt.Errorf("unexpected redis response for SetNX: %s", line)
+}
+
 func (c *Client) open(ctx context.Context) (net.Conn, *bufio.Reader, error) {
 	var dialer net.Dialer
 	conn, err := dialer.DialContext(ctx, "tcp", c.config.Addr)
 	if err != nil {
-		return nil, nil, err
+		return nil, nil, fmt.Errorf("dial tcp: %w", err)
 	}
 
 	deadline := time.Now().Add(c.config.Timeout)
 	if err := conn.SetDeadline(deadline); err != nil {
 		conn.Close()
-		return nil, nil, err
+		return nil, nil, fmt.Errorf("set deadline: %w", err)
 	}
 
 	reader := bufio.NewReader(conn)
@@ -87,7 +120,7 @@ func (c *Client) open(ctx context.Context) (net.Conn, *bufio.Reader, error) {
 	if c.config.Password != "" {
 		if err := writeCommand(conn, "AUTH", c.config.Password); err != nil {
 			conn.Close()
-			return nil, nil, err
+			return nil, nil, fmt.Errorf("write auth command: %w", err)
 		}
 		if err := readSimpleResponse(reader); err != nil {
 			conn.Close()
@@ -98,7 +131,7 @@ func (c *Client) open(ctx context.Context) (net.Conn, *bufio.Reader, error) {
 	if c.config.DB > 0 {
 		if err := writeCommand(conn, "SELECT", strconv.Itoa(c.config.DB)); err != nil {
 			conn.Close()
-			return nil, nil, err
+			return nil, nil, fmt.Errorf("write select command: %w", err)
 		}
 		if err := readSimpleResponse(reader); err != nil {
 			conn.Close()

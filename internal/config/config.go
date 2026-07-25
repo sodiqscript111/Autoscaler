@@ -5,7 +5,7 @@ import (
 	"os"
 	"time"
 
-	"github.com/goccy/go-yaml"
+	yaml "gopkg.in/yaml.v3"
 )
 
 type Config struct {
@@ -17,6 +17,15 @@ type Config struct {
 	Redis      RedisConfig      `yaml:"redis"`
 	Downstream DownstreamConfig `yaml:"downstream"`
 	Scaling    ScalingConfig    `yaml:"scaling"`
+	Nomad      NomadConfig      `yaml:"nomad"`
+}
+
+type NomadConfig struct {
+	Enabled   bool   `yaml:"enabled"`
+	Address   string `yaml:"address"`
+	JobName   string `yaml:"job_name"`
+	GroupName string `yaml:"group_name"`
+	MaxScale  int    `yaml:"max_scale"`
 }
 
 type APIConfig struct {
@@ -157,6 +166,13 @@ func Default() Config {
 			CPUBackpressureThreshold: 85,
 			QueueGrowthWindow:        5,
 			QueueGrowthIncreaseCount: 3,
+		},
+		Nomad: NomadConfig{
+			Enabled:   false,
+			Address:   "http://localhost:4646",
+			JobName:   "autoscaler",
+			GroupName: "worker-group",
+			MaxScale:  10,
 		},
 	}
 }

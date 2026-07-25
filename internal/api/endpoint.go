@@ -29,7 +29,7 @@ func BackpressureEnabled() bool {
 	return backpressureEnabled.Load()
 }
 
-func Injectionpoint(c *gin.Context) {
+func ReceiveEvent(c *gin.Context) {
 	if backpressureEnabled.Load() {
 		c.JSON(http.StatusTooManyRequests, gin.H{"error": "backpressure enabled; retry later"})
 		return

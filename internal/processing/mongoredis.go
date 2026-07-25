@@ -60,13 +60,13 @@ func NewMongoRedisProcessor(ctx context.Context, cfg config.Config, monitor *dow
 			Name:      "mongodb",
 			Kind:      downstream.KindMongoDB,
 			Operation: "insert_many",
-			Policy:    parsePolicy(cfg.MongoDB.Policy, downstream.PolicyCritical),
+			Policy:    downstream.ParsePolicy(cfg.MongoDB.Policy, downstream.PolicyCritical),
 		},
 		redisDependency: downstream.Dependency{
 			Name:      "redis",
 			Kind:      downstream.KindRedis,
 			Operation: "set_batch",
-			Policy:    parsePolicy(cfg.Redis.Policy, downstream.PolicyProtective),
+			Policy:    downstream.ParsePolicy(cfg.Redis.Policy, downstream.PolicyProtective),
 		},
 	}, nil
 }
@@ -101,22 +101,16 @@ func (p *MongoRedisProcessor) ProcessBatch(ctx context.Context, batch []kafkago.
 		}
 		return nil
 	})
-	if err != nil {
-		return err
-	}
 
-	return nil
+	return err
 }
 
 func (p *MongoRedisProcessor) MongoClient() *mongo.Client {
-	if p == nil {
-		return nil
-	}
 	return p.mongoClient
 }
 
 func (p *MongoRedisProcessor) Close(ctx context.Context) error {
-	if p == nil || p.mongoClient == nil {
+	if p.mongoClient == nil {
 		return nil
 	}
 
@@ -139,17 +133,4 @@ func decodeEvents(batch []kafkago.Message) ([]model.Event, error) {
 	}
 
 	return events, nil
-}
-
-func parsePolicy(value string, fallback downstream.Policy) downstream.Policy {
-	switch value {
-	case string(downstream.PolicyCritical):
-		return downstream.PolicyCritical
-	case string(downstream.PolicyProtective):
-		return downstream.PolicyProtective
-	case string(downstream.PolicyObserveOnly):
-		return downstream.PolicyObserveOnly
-	default:
-		return fallback
-	}
 }

@@ -1,6 +1,7 @@
 package scaler
 
 import (
+	"fmt"
 	"os"
 
 	"github.com/shirou/gopsutil/v3/process"
@@ -16,7 +17,7 @@ var currentProcess *process.Process
 func InitProcessMonitor() error {
 	p, err := process.NewProcess(int32(os.Getpid()))
 	if err != nil {
-		return err
+		return fmt.Errorf("get process: %w", err)
 	}
 
 	currentProcess = p
@@ -32,12 +33,12 @@ func CurrentProcessCPUAndMemory() (ProcessMetrics, error) {
 
 	cpuPercent, err := currentProcess.CPUPercent()
 	if err != nil {
-		return ProcessMetrics{}, err
+		return ProcessMetrics{}, fmt.Errorf("get cpu percent: %w", err)
 	}
 
 	memPercent, err := currentProcess.MemoryPercent()
 	if err != nil {
-		return ProcessMetrics{}, err
+		return ProcessMetrics{}, fmt.Errorf("get memory percent: %w", err)
 	}
 
 	return ProcessMetrics{

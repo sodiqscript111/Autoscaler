@@ -1,6 +1,7 @@
 package scaler
 
 import (
+	"context"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -61,7 +62,7 @@ func (tw *ThroughputWindow) AddProcessed(count int64) {
 	tw.processedCounter.Add(count)
 }
 
-func (tw *ThroughputWindow) Start(stopCh <-chan struct{}) {
+func (tw *ThroughputWindow) Start(ctx context.Context) {
 	ticker := time.NewTicker(tw.interval)
 	defer ticker.Stop()
 
@@ -69,7 +70,7 @@ func (tw *ThroughputWindow) Start(stopCh <-chan struct{}) {
 		select {
 		case <-ticker.C:
 			tw.captureSnapshot()
-		case <-stopCh:
+		case <-ctx.Done():
 			return
 		}
 	}

@@ -54,10 +54,11 @@ func CloseKafkaWriter() error {
 	return writer.Close()
 }
 
-func CloseKafkaReader() {
-	if reader != nil {
-		reader.Close()
+func CloseKafkaReader() error {
+	if reader == nil {
+		return nil
 	}
+	return reader.Close()
 }
 
 func WriteToKafka(eventData model.Event) error {
@@ -105,24 +106,24 @@ func CommitMessages(ctx context.Context, messages ...kafkago.Message) error {
 	return reader.CommitMessages(ctx, messages...)
 }
 
-func FetchAndProcess(ctx context.Context) {
+func FetchAndProcess(ctx context.Context) error {
 	msg, err := FetchMessage(ctx)
 	if err != nil {
-		fmt.Println("fetch error:", err)
-		return
+		return fmt.Errorf("fetch message: %w", err)
 	}
 
 	var event model.Event
 	if err := json.Unmarshal(msg.Value, &event); err != nil {
-		fmt.Println("decode error:", err)
-		return
+		return fmt.Errorf("decode event: %w", err)
 	}
 
 	fmt.Printf("message: key=%s event=%+v\n", string(msg.Key), event)
 
 	if err := CommitMessages(ctx, msg); err != nil {
-		fmt.Println("commit error:", err)
+		return fmt.Errorf("commit messages: %w", err)
 	}
+
+	return nil
 }
 
 func CurrentConsumerLag() int64 {

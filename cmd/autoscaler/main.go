@@ -13,6 +13,7 @@ import (
 	"autoscaler/internal/downstream"
 	"autoscaler/internal/kafka"
 	"autoscaler/internal/processing"
+	"autoscaler/internal/redisx"
 	"autoscaler/internal/scaler"
 	"autoscaler/internal/workers"
 
@@ -59,11 +60,24 @@ func main() {
 		}
 	}()
 
+	redisClient := redisx.NewClient(redisx.Config{
+		Addr:     cfg.Redis.Addr,
+		Password: cfg.Redis.Password,
+		DB:       cfg.Redis.DB,
+		Timeout:  cfg.Redis.ConnectTimeout,
+	})
+
+	nomadScaler, err := scaler.NewNomadScaler(cfg.Nomad, redisClient)
+	if err != nil {
+		fmt.Println("nomad scaler startup error:", err)
+		os.Exit(1)
+	}
+
 	startBackgroundCheckers(ctx, cfg, downstreamMonitor, processor)
 
-	stopThroughput := make(chan struct{})
+	stopThroughput, cancelThroughput := context.WithCancel(ctx)
 	go throughput.Start(stopThroughput)
-	defer close(stopThroughput)
+	defer cancelThroughput()
 
 	manager := workers.NewManager(ctx, throughput, workers.Config{
 		InitialWorkers:   cfg.Workers.InitialWorkers,
@@ -76,10 +90,10 @@ func main() {
 		Processor:        processor,
 		Downstream:       downstreamMonitor,
 	})
-	defer manager.Stop()
+	defer manager.Shutdown()
 
 	r := gin.Default()
-	r.POST("/events", api.Injectionpoint)
+	r.POST("/events", api.ReceiveEvent)
 	r.GET("/healthz", api.Healthz)
 	r.GET("/internal/status", api.RuntimeStatus)
 	go func() {
@@ -120,7 +134,8 @@ func main() {
 				},
 			})
 
-			manager.ApplyDecision(decision)
+			maxedOut, minOut := manager.ApplyDecision(decision)
+			nomadScaler.ApplyNomadScaling(ctx, decision, maxedOut, minOut)
 			state := manager.State()
 			snapshot := throughput.LatestSnapshot()
 			printStatus(state, snapshot, decision, cpuUsage, lag, decisionDownstreamStatus)
@@ -214,7 +229,7 @@ func startBackgroundCheckers(ctx context.Context, cfg config.Config, monitor *do
 			Addr:     cfg.Redis.Addr,
 			Password: cfg.Redis.Password,
 			DB:       cfg.Redis.DB,
-			Policy:   parsePolicy(cfg.Redis.Policy, downstream.PolicyProtective),
+			Policy:   downstream.ParsePolicy(cfg.Redis.Policy, downstream.PolicyProtective),
 			Interval: cfg.Redis.HealthCheckInterval,
 			Timeout:  cfg.Redis.HealthCheckTimeout,
 		})
@@ -225,9 +240,11 @@ func startBackgroundCheckers(ctx context.Context, cfg config.Config, monitor *do
 		mongoChecker := downstream.NewMongoDBChecker(
 			monitor,
 			processor.MongoClient(),
-			"mongodb",
-			parsePolicy(cfg.MongoDB.Policy, downstream.PolicyCritical),
-			cfg.MongoDB.HealthCheckInterval,
+			downstream.MongoDBConfig{
+				Name:     "mongodb",
+				Policy:   downstream.ParsePolicy(cfg.MongoDB.Policy, downstream.PolicyCritical),
+				Interval: cfg.MongoDB.HealthCheckInterval,
+			},
 		)
 		go mongoChecker.Start(ctx)
 	}
@@ -265,7 +282,7 @@ func formatLatency(status downstream.Status) string {
 func toSnapshot(status downstream.Status) api.DownstreamStatusSnapshot {
 	return api.DownstreamStatusSnapshot{
 		Name:        status.Name,
-		Kind:        status.Kind,
+		Kind:        string(status.Kind),
 		Operation:   status.Operation,
 		Policy:      string(status.Policy),
 		State:       string(status.State),
@@ -285,17 +302,4 @@ func toSnapshots(statuses []downstream.Status) []api.DownstreamStatusSnapshot {
 		result = append(result, toSnapshot(status))
 	}
 	return result
-}
-
-func parsePolicy(value string, fallback downstream.Policy) downstream.Policy {
-	switch value {
-	case string(downstream.PolicyCritical):
-		return downstream.PolicyCritical
-	case string(downstream.PolicyProtective):
-		return downstream.PolicyProtective
-	case string(downstream.PolicyObserveOnly):
-		return downstream.PolicyObserveOnly
-	default:
-		return fallback
-	}
 }

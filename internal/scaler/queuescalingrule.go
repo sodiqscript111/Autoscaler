@@ -175,7 +175,7 @@ func downstreamDecisionReason(reason string, status downstream.Status) string {
 		return reason
 	}
 
-	return reason + ": " + status.Kind + "/" + status.Name + "/" + status.Operation
+	return reason + ": " + string(status.Kind) + "/" + status.Name + "/" + status.Operation
 }
 
 func isQueueGrowing(history []int64, increaseCountThreshold int) bool {
@@ -201,10 +201,7 @@ func withPolicyDefaults(policy Policy) Policy {
 	if policy.BackpressureLagThreshold <= 0 {
 		policy.BackpressureLagThreshold = 100
 	}
-	if policy.ScaleDownLagThreshold < 0 {
-		policy.ScaleDownLagThreshold = 20
-	}
-	if policy.ScaleDownLagThreshold == 0 {
+	if policy.ScaleDownLagThreshold <= 0 {
 		policy.ScaleDownLagThreshold = 20
 	}
 	if policy.CPUScaleUpThreshold <= 0 {
