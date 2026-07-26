@@ -192,7 +192,7 @@ func TestTrackRecordsDependencySample(t *testing.T) {
 		Policy:    PolicyCritical,
 	}
 
-	err := Track(context.Background(), monitor, dependency, func(ctx context.Context) error {
+	err := Track(t.Context(), monitor, dependency, func(ctx context.Context) error {
 		return nil
 	})
 	if err != nil {

@@ -3,7 +3,7 @@ package model
 import "time"
 
 type Event struct {
-	ID        int64     `json:"id,omitempty" bson:"id"`
+	ID        int64     `json:"id,omitzero" bson:"id"`
 	UserID    string    `json:"user_id" bson:"user_id"`
 	Action    string    `json:"action" bson:"action"`
 	Element   string    `json:"element" bson:"element"`

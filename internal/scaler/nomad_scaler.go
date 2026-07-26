@@ -13,7 +13,7 @@ type NomadScaler struct {
 	config config.NomadConfig
 }
 
-func NewNomadScaler(cfg config.NomadConfig, _ interface{}) (*NomadScaler, error) {
+func NewNomadScaler(cfg config.NomadConfig, _ any) (*NomadScaler, error) {
 	if !cfg.Enabled {
 		return &NomadScaler{}, nil
 	}

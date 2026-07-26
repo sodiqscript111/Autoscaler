@@ -36,7 +36,7 @@ type DownstreamStatusSnapshot struct {
 	ErrorRate   float64 `json:"error_rate"`
 	P95Latency  string  `json:"p95_latency"`
 	Reason      string  `json:"reason"`
-	LastError   string  `json:"last_error,omitempty"`
+	LastError   string  `json:"last_error,omitzero"`
 }
 
 var runtimeSnapshotStore struct {

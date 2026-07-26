@@ -18,7 +18,7 @@ func TestProcessBatchRecordsSuccessfulDownstreamSample(t *testing.T) {
 		downstream: monitor,
 	}
 
-	err := manager.processBatch(context.Background(), []amqp.Delivery{{Body: []byte("ok")}})
+	err := manager.processBatch(t.Context(), []amqp.Delivery{{Body: []byte("ok")}})
 	if err != nil {
 		t.Fatalf("process batch failed: %v", err)
 	}
@@ -40,7 +40,7 @@ func TestProcessBatchRecordsFailedDownstreamSample(t *testing.T) {
 		downstream: monitor,
 	}
 
-	err := manager.processBatch(context.Background(), []amqp.Delivery{{Body: []byte("fail")}})
+	err := manager.processBatch(t.Context(), []amqp.Delivery{{Body: []byte("fail")}})
 	if !errors.Is(err, expectedErr) {
 		t.Fatalf("expected processor error, got %v", err)
 	}

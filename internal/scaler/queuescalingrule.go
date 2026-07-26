@@ -103,12 +103,7 @@ func CalculateDecisionWithContext(input DecisionContext) Decision {
 		}
 	}
 
-	if queueSize >= input.Policy.BackpressureLagThreshold && growing && fallingBehind {
-		return Decision{
-			EnableBackpressure: true,
-			Reason:             "lag is very high, queue is growing, and workers are falling behind",
-		}
-	}
+
 
 	if queueSize >= input.Policy.ScaleUpLagThreshold && growing && fallingBehind && downstreamProtecting {
 		reason := "lag is high and workers are falling behind, but downstream is not healthy so scale-up is suppressed"
