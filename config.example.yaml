@@ -1,11 +1,9 @@
 api:
   address: ":8080"
 
-kafka:
-  brokers:
-    - "localhost:9094"
-  topic: "events"
-  group_id: "autoscaler-group"
+rabbitmq:
+  url: "amqp://guest:guest@localhost:5672/"
+  queue_name: "events"
 
 workers:
   initial_workers: 1

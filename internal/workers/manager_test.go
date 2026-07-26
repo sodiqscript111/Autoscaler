@@ -8,7 +8,7 @@ import (
 
 	"autoscaler/internal/downstream"
 
-	kafkago "github.com/segmentio/kafka-go"
+	amqp "github.com/rabbitmq/amqp091-go"
 )
 
 func TestProcessBatchRecordsSuccessfulDownstreamSample(t *testing.T) {
@@ -18,7 +18,7 @@ func TestProcessBatchRecordsSuccessfulDownstreamSample(t *testing.T) {
 		downstream: monitor,
 	}
 
-	err := manager.processBatch(context.Background(), []kafkago.Message{{Value: []byte("ok")}})
+	err := manager.processBatch(context.Background(), []amqp.Delivery{{Body: []byte("ok")}})
 	if err != nil {
 		t.Fatalf("process batch failed: %v", err)
 	}
@@ -40,7 +40,7 @@ func TestProcessBatchRecordsFailedDownstreamSample(t *testing.T) {
 		downstream: monitor,
 	}
 
-	err := manager.processBatch(context.Background(), []kafkago.Message{{Value: []byte("fail")}})
+	err := manager.processBatch(context.Background(), []amqp.Delivery{{Body: []byte("fail")}})
 	if !errors.Is(err, expectedErr) {
 		t.Fatalf("expected processor error, got %v", err)
 	}
@@ -58,7 +58,7 @@ type fakeProcessor struct {
 	err error
 }
 
-func (p fakeProcessor) ProcessBatch(ctx context.Context, batch []kafkago.Message) error {
+func (p fakeProcessor) ProcessBatch(ctx context.Context, batch []amqp.Delivery) error {
 	return p.err
 }
 

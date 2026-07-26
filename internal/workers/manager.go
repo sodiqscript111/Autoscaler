@@ -9,10 +9,10 @@ import (
 
 	"autoscaler/internal/api"
 	"autoscaler/internal/downstream"
-	"autoscaler/internal/kafka"
+	"autoscaler/internal/rabbitmq"
 	"autoscaler/internal/scaler"
 
-	kafkago "github.com/segmentio/kafka-go"
+	amqp "github.com/rabbitmq/amqp091-go"
 )
 
 type Config struct {
@@ -28,7 +28,7 @@ type Config struct {
 }
 
 type BatchProcessor interface {
-	ProcessBatch(ctx context.Context, batch []kafkago.Message) error
+	ProcessBatch(ctx context.Context, batch []amqp.Delivery) error
 }
 
 type SleepProcessor struct {
@@ -71,46 +71,7 @@ func NewManager(rootCtx context.Context, throughput *scaler.ThroughputWindow, co
 	return manager
 }
 
-func (m *Manager) ApplyDecision(decision scaler.Decision) (maxedOut, minOut bool) {
-	before := m.State()
-
-	if decision.EnableBackpressure {
-		api.SetBackpressureEnabled(true)
-		if !before.BackpressureEnabled {
-			fmt.Printf("[manager] backpressure enabled reason=%q\n", decision.Reason)
-		}
-		return false, false
-	}
-
-	if before.BackpressureEnabled {
-		fmt.Printf("[manager] backpressure disabled reason=%q\n", decision.Reason)
-	}
-	api.SetBackpressureEnabled(false)
-
-	switch {
-	case decision.ScaleUp:
-		if m.Count() >= m.config.MaxWorkers && m.BatchSize() >= int64(m.config.MaxBatchSize) {
-			maxedOut = true
-			return maxedOut, minOut
-		}
-
-		m.ScaleTo(m.Count() + 1)
-		m.adjustBatchSize(m.config.BatchStep)
-		after := m.State()
-		fmt.Printf("[manager] scale_up workers=%d->%d batchSize=%d->%d reason=%q\n", before.Workers, after.Workers, before.BatchSize, after.BatchSize, decision.Reason)
-	case decision.ScaleDown:
-		if m.Count() <= m.config.MinWorkers && m.BatchSize() <= int64(m.config.MinBatchSize) {
-			minOut = true
-			return maxedOut, minOut
-		}
-
-		m.ScaleTo(m.Count() - 1)
-		m.adjustBatchSize(-m.config.BatchStep)
-		after := m.State()
-		fmt.Printf("[manager] scale_down workers=%d->%d batchSize=%d->%d reason=%q\n", before.Workers, after.Workers, before.BatchSize, after.BatchSize, decision.Reason)
-	}
-	return false, false
-}
+// Removed ApplyDecision for static worker pool architecture
 
 func (m *Manager) ScaleTo(target int) {
 	target = clamp(target, m.config.MinWorkers, m.config.MaxWorkers)
@@ -163,9 +124,9 @@ func (m *Manager) Shutdown() {
 
 func (m *Manager) runWorker(ctx context.Context, workerID int) {
 	for {
-		batch := make([]kafkago.Message, 0, int(m.BatchSize()))
+		batch := make([]amqp.Delivery, 0, int(m.BatchSize()))
 
-		item, err := kafka.FetchMessage(ctx)
+		item, err := rabbitmq.FetchMessage(ctx)
 		if err != nil {
 			if ctx.Err() != nil {
 				return
@@ -177,7 +138,7 @@ func (m *Manager) runWorker(ctx context.Context, workerID int) {
 
 		fillCtx, cancel := context.WithTimeout(ctx, 10*time.Millisecond)
 		for len(batch) < int(m.BatchSize()) {
-			item, err := kafka.FetchMessage(fillCtx)
+			item, err := rabbitmq.FetchMessage(fillCtx)
 			if err != nil {
 				break
 			}
@@ -191,7 +152,7 @@ func (m *Manager) runWorker(ctx context.Context, workerID int) {
 		}
 
 		commitCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
-		err = kafka.CommitMessages(commitCtx, batch...)
+		err = rabbitmq.CommitMessages(commitCtx, batch...)
 		cancel()
 		if err != nil {
 			fmt.Printf("worker=%d failed to commit messages: %v\n", workerID, err)
@@ -204,7 +165,7 @@ func (m *Manager) runWorker(ctx context.Context, workerID int) {
 	}
 }
 
-func (m *Manager) processBatch(ctx context.Context, batch []kafkago.Message) error {
+func (m *Manager) processBatch(ctx context.Context, batch []amqp.Delivery) error {
 	processor := m.processor
 	if processor == nil {
 		processor = SleepProcessor{Latency: 50 * time.Millisecond}
@@ -232,7 +193,7 @@ func (m *Manager) processBatch(ctx context.Context, batch []kafkago.Message) err
 	return err
 }
 
-func (p SleepProcessor) ProcessBatch(ctx context.Context, batch []kafkago.Message) error {
+func (p SleepProcessor) ProcessBatch(ctx context.Context, batch []amqp.Delivery) error {
 	latency := p.Latency
 	if latency <= 0 {
 		latency = 50 * time.Millisecond
@@ -249,11 +210,7 @@ func (p SleepProcessor) ProcessBatch(ctx context.Context, batch []kafkago.Messag
 	}
 }
 
-func (m *Manager) adjustBatchSize(delta int) {
-	next := int(m.currentBatchSize.Load()) + delta
-	next = clamp(next, m.config.MinBatchSize, m.config.MaxBatchSize)
-	m.currentBatchSize.Store(int64(next))
-}
+// Removed adjustBatchSize for static worker pool architecture
 
 func withDefaults(config Config) Config {
 	if config.InitialWorkers <= 0 {

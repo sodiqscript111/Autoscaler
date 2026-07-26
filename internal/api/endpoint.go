@@ -5,8 +5,8 @@ import (
 	"sync/atomic"
 	"time"
 
-	"autoscaler/internal/kafka"
 	"autoscaler/internal/model"
+	"autoscaler/internal/rabbitmq"
 	"autoscaler/internal/scaler"
 
 	"github.com/gin-gonic/gin"
@@ -48,7 +48,7 @@ func ReceiveEvent(c *gin.Context) {
 		event.Timestamp = time.Now().UTC()
 	}
 
-	if err := kafka.WriteToKafka(event); err != nil {
+	if err := rabbitmq.Publish(event); err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
 	}

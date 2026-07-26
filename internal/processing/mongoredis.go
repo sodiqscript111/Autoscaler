@@ -11,7 +11,7 @@ import (
 	"autoscaler/internal/model"
 	"autoscaler/internal/redisx"
 
-	kafkago "github.com/segmentio/kafka-go"
+	amqp "github.com/rabbitmq/amqp091-go"
 	"go.mongodb.org/mongo-driver/v2/mongo"
 	"go.mongodb.org/mongo-driver/v2/mongo/options"
 )
@@ -71,7 +71,7 @@ func NewMongoRedisProcessor(ctx context.Context, cfg config.Config, monitor *dow
 	}, nil
 }
 
-func (p *MongoRedisProcessor) ProcessBatch(ctx context.Context, batch []kafkago.Message) error {
+func (p *MongoRedisProcessor) ProcessBatch(ctx context.Context, batch []amqp.Delivery) error {
 	events, err := decodeEvents(batch)
 	if err != nil {
 		return err
@@ -121,13 +121,13 @@ func (p *MongoRedisProcessor) redisKey(event model.Event) string {
 	return fmt.Sprintf("%s%d", p.redisKeyPrefix, event.ID)
 }
 
-func decodeEvents(batch []kafkago.Message) ([]model.Event, error) {
+func decodeEvents(batch []amqp.Delivery) ([]model.Event, error) {
 	events := make([]model.Event, 0, len(batch))
 
-	for _, message := range batch {
+	for _, msg := range batch {
 		var event model.Event
-		if err := json.Unmarshal(message.Value, &event); err != nil {
-			return nil, fmt.Errorf("decode kafka message: %w", err)
+		if err := json.Unmarshal(msg.Body, &event); err != nil {
+			return nil, fmt.Errorf("decode rabbitmq message: %w", err)
 		}
 		events = append(events, event)
 	}

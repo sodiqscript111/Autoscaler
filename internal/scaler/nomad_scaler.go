@@ -3,21 +3,17 @@ package scaler
 import (
 	"context"
 	"fmt"
-	"time"
-
 	"autoscaler/internal/config"
-	"autoscaler/internal/redisx"
 
 	nomad "github.com/hashicorp/nomad/api"
 )
 
 type NomadScaler struct {
-	client      *nomad.Client
-	redisClient *redisx.Client
-	config      config.NomadConfig
+	client *nomad.Client
+	config config.NomadConfig
 }
 
-func NewNomadScaler(cfg config.NomadConfig, redisClient *redisx.Client) (*NomadScaler, error) {
+func NewNomadScaler(cfg config.NomadConfig, _ interface{}) (*NomadScaler, error) {
 	if !cfg.Enabled {
 		return &NomadScaler{}, nil
 	}
@@ -30,9 +26,8 @@ func NewNomadScaler(cfg config.NomadConfig, redisClient *redisx.Client) (*NomadS
 	}
 
 	return &NomadScaler{
-		client:      client,
-		redisClient: redisClient,
-		config:      cfg,
+		client: client,
+		config: cfg,
 	}, nil
 }
 
@@ -46,18 +41,7 @@ func (n *NomadScaler) ApplyNomadScaling(ctx context.Context, decision Decision, 
 		return
 	}
 
-	lockKey := "autoscaler:nomad_leader_lock"
-	acquired, err := n.redisClient.SetNX(ctx, lockKey, "locked", 5*time.Second)
-	if err != nil {
-		fmt.Printf("[nomad] failed to acquire leader lock: %v\n", err)
-		return
-	}
-	if !acquired {
-
-		return
-	}
-
-	defer n.redisClient.SetNX(ctx, lockKey, "released", 1*time.Millisecond)
+	// No locking needed since this runs in a standalone singleton controller
 
 	job, _, err := n.client.Jobs().Info(n.config.JobName, nil)
 	if err != nil {

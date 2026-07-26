@@ -10,7 +10,7 @@ import (
 
 type Config struct {
 	API        APIConfig        `yaml:"api"`
-	Kafka      KafkaConfig      `yaml:"kafka"`
+	RabbitMQ   RabbitMQConfig   `yaml:"rabbitmq"`
 	Workers    WorkersConfig    `yaml:"workers"`
 	Processing ProcessingConfig `yaml:"processing"`
 	MongoDB    MongoDBConfig    `yaml:"mongodb"`
@@ -32,10 +32,9 @@ type APIConfig struct {
 	Address string `yaml:"address"`
 }
 
-type KafkaConfig struct {
-	Brokers []string `yaml:"brokers"`
-	Topic   string   `yaml:"topic"`
-	GroupID string   `yaml:"group_id"`
+type RabbitMQConfig struct {
+	URL       string `yaml:"url"`
+	QueueName string `yaml:"queue_name"`
 }
 
 type WorkersConfig struct {
@@ -106,10 +105,9 @@ func Default() Config {
 		API: APIConfig{
 			Address: ":8080",
 		},
-		Kafka: KafkaConfig{
-			Brokers: []string{"localhost:9094"},
-			Topic:   "events",
-			GroupID: "autoscaler-group",
+		RabbitMQ: RabbitMQConfig{
+			URL:       "amqp://guest:guest@localhost:5672/",
+			QueueName: "events",
 		},
 		Workers: WorkersConfig{
 			InitialWorkers:   1,
@@ -205,12 +203,10 @@ func (c Config) Validate() error {
 	switch {
 	case c.API.Address == "":
 		return fmt.Errorf("api.address is required")
-	case len(c.Kafka.Brokers) == 0:
-		return fmt.Errorf("kafka.brokers must contain at least one broker")
-	case c.Kafka.Topic == "":
-		return fmt.Errorf("kafka.topic is required")
-	case c.Kafka.GroupID == "":
-		return fmt.Errorf("kafka.group_id is required")
+	case c.RabbitMQ.URL == "":
+		return fmt.Errorf("rabbitmq.url is required")
+	case c.RabbitMQ.QueueName == "":
+		return fmt.Errorf("rabbitmq.queue_name is required")
 	case c.MongoDB.URI == "":
 		return fmt.Errorf("mongodb.uri is required")
 	case c.MongoDB.Database == "":

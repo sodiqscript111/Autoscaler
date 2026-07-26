@@ -4,7 +4,7 @@ import (
 	"time"
 
 	"autoscaler/internal/downstream"
-	"autoscaler/internal/kafka"
+	"autoscaler/internal/rabbitmq"
 )
 
 type Decision struct {
@@ -54,7 +54,7 @@ func CalculateDecision(cpuUsage float64, throughput *ThroughputWindow) Decision 
 	return CalculateDecisionWithContext(DecisionContext{
 		CPUUsage:   cpuUsage,
 		Throughput: throughput,
-		QueueSize:  int64(kafka.CurrentConsumerLag()),
+		QueueSize:  int64(rabbitmq.CurrentQueueDepth()),
 		Downstream: downstream.Status{
 			State: downstream.StateUnknown,
 		},
@@ -87,7 +87,6 @@ func CalculateDecisionWithContext(input DecisionContext) Decision {
 	incomingRate := input.Throughput.AverageIncomingRate()
 	processedRate := input.Throughput.AverageProcessedRate()
 	fallingBehind := incomingRate > processedRate
-	cpuUnknown := input.CPUUsage < 0
 	downstreamActionable := actionableDownstream(input.Downstream)
 	downstreamPolicy := downstreamPolicy(input.Downstream)
 	downstreamState := input.Downstream.State
@@ -104,10 +103,10 @@ func CalculateDecisionWithContext(input DecisionContext) Decision {
 		}
 	}
 
-	if queueSize >= input.Policy.BackpressureLagThreshold && growing && fallingBehind && input.CPUUsage > input.Policy.CPUBackpressureThreshold {
+	if queueSize >= input.Policy.BackpressureLagThreshold && growing && fallingBehind {
 		return Decision{
 			EnableBackpressure: true,
-			Reason:             "lag is very high, queue is growing, workers are falling behind, and CPU is unhealthy",
+			Reason:             "lag is very high, queue is growing, and workers are falling behind",
 		}
 	}
 
@@ -123,15 +122,10 @@ func CalculateDecisionWithContext(input DecisionContext) Decision {
 		}
 	}
 
-	if queueSize >= input.Policy.ScaleUpLagThreshold && growing && fallingBehind && (cpuUnknown || input.CPUUsage < input.Policy.CPUScaleUpThreshold) {
-		reason := "lag is high, queue is growing, workers are falling behind, and CPU is healthy enough to scale up"
-		if cpuUnknown {
-			reason = "lag is high, queue is growing, workers are falling behind, and CPU usage is unknown"
-		}
-
+	if queueSize >= input.Policy.ScaleUpLagThreshold && growing && fallingBehind {
 		return Decision{
 			ScaleUp: true,
-			Reason:  reason,
+			Reason:  "lag is high, queue is growing, and workers are falling behind",
 		}
 	}
 
