@@ -1,70 +1,73 @@
 # Autoscaler
 
-This project is a queue-driven autoscaler demo that accepts events over HTTP, writes them to Kafka, processes them with a worker pool, persists them to MongoDB, caches them in Redis, and uses downstream health as part of the scaling decision pipeline.
+This project is a queue-driven autoscaler demo that accepts events over HTTP, writes them to RabbitMQ, processes them with a horizontally scalable worker pool, persists them to MongoDB, caches them in Redis, and uses downstream health as part of the scaling decision pipeline.
+
+The architecture follows an "External Autoscaler" pattern, strictly separating the control plane (the scaling logic) from the data plane (the event processors).
 
 ## Architecture
 
 ```mermaid
 flowchart LR
     Client["Client / Producer"] --> API["Gin API<br/>POST /events"]
-    API --> Kafka["Kafka Topic"]
-    Kafka --> Workers["Dynamic Worker Pool"]
-    Workers --> Mongo["MongoDB<br/>durable storage"]
-    Workers --> Redis["Redis<br/>TTL cache"]
+    
+    subgraph Data Plane
+        API --> RMQ["RabbitMQ Queue"]
+        RMQ --> Workers["Worker Allocations<br/>(Dumb Processors)"]
+        Workers --> Mongo["MongoDB<br/>durable storage"]
+        Workers --> Redis["Redis<br/>TTL cache"]
+    end
 
-    Kafka --> Metrics["Lag + Throughput"]
-    Workers --> Metrics
-    Proc["Process CPU"] --> Metrics
-    Mongo --> Health["Downstream Health Monitor"]
-    Redis --> Health
-    Workers --> Health
-
-    Metrics --> Brain["Autoscaler Decision Engine"]
-    Health --> Brain
-    Brain --> Actions["scale_up / scale_down / backpressure / none"]
-    Actions --> Workers
-    Actions --> API
+    subgraph Control Plane
+        Controller["Autoscaler Controller<br/>(Singleton)"]
+    end
+    
+    RMQ -.->|Poll Queue Lag| Controller
+    Mongo -.->|Ping Health| Controller
+    Redis -.->|Ping Health| Controller
+    Controller -->|Scale Allocations Up/Down| Nomad["Nomad API"]
+    Nomad -->|Start/Stop Instances| Workers
 ```
 
 The runtime flow is:
 
-1. `POST /events` accepts an event and writes it to Kafka.
-2. Workers fetch Kafka messages in batches.
-3. Each batch is decoded into events.
-4. The batch is stored durably in MongoDB with `insert_many`.
-5. Each event is cached in Redis with a configurable TTL.
-6. Throughput, Kafka lag, CPU, and downstream health are evaluated once per tick.
-7. The autoscaler chooses one action:
-   - `scale_up`
-   - `scale_down`
-   - `backpressure`
-   - `none`
+1. `POST /events` accepts an event and writes it to RabbitMQ.
+2. The Nomad orchestrator runs N instances of the Worker application.
+3. Workers fetch RabbitMQ messages in batches using a fixed pool of goroutines.
+4. Each batch is decoded into events.
+5. The batch is stored durably in MongoDB with `insert_many`.
+6. Each event is cached in Redis with a configurable TTL.
+7. Separately, the Autoscaler Controller evaluates RabbitMQ lag and downstream health once per tick.
+8. The Controller instructs Nomad to adjust the Worker instance count via the Nomad API.
 
 ## Components
 
-### API
+### API (Worker)
 
 - `POST /events`
   - accepts an event payload
   - assigns an ID and timestamp if they are missing
-  - writes the event to Kafka
+  - writes the event to RabbitMQ
 - `GET /healthz`
-  - returns process health and whether backpressure is enabled
-- `GET /internal/status`
-  - returns the latest autoscaler snapshot, including worker state, lag, throughput, and downstream status
+  - returns process health
 
 ### Workers
 
-Workers are managed dynamically. They scale worker count and batch size based on autoscaler decisions.
+Workers are purely data-plane processing units. They boot up with a fixed, static pool of goroutines and process batches as quickly as physical limits allow. 
 
-Each worker batch is processed by a real downstream processor:
+Each worker batch is processed by a downstream processor:
 
 - MongoDB is the primary durable store
 - Redis stores cached event payloads
 
+Workers do not make scaling decisions or track system-wide throughput. They rely entirely on Nomad for horizontal scaling.
+
+### Controller (The Brain)
+
+The Controller is a singleton service (`count = 1` in Nomad). It executes the decision pipeline on a configurable interval. It reads the total lag from RabbitMQ and pings downstream databases to ensure they can handle increased load before telling Nomad to spin up new workers.
+
 ### Downstream health
 
-Downstream health is tracked per dependency key:
+Downstream health is tracked by the Controller per dependency key:
 
 - `kind`
 - `name`
@@ -72,11 +75,8 @@ Downstream health is tracked per dependency key:
 
 Current built-in downstreams:
 
-- `mongodb/mongodb/insert_many`
 - `mongodb/mongodb/ping`
-- `redis/redis/set_batch`
 - `redis/redis/ping`
-- `worker/worker-processor/process_batch`
 
 Each dependency has a policy:
 
@@ -105,17 +105,14 @@ The app loads configuration from:
 2. `config.yaml` if it exists, or
 3. built-in defaults
 
-Example local config is in [config.example.yaml](C:/Users/Owner/GolandProjects/autoscaler/config.example.yaml).
-Docker uses [config.docker.yaml](C:/Users/Owner/GolandProjects/autoscaler/config.docker.yaml).
-
 Important config areas:
 
 - `api`
   - server bind address
-- `kafka`
-  - brokers, topic, consumer group
+- `rabbitmq`
+  - broker url, queue name
 - `workers`
-  - worker and batch limits
+  - max batch size limits
 - `processing`
   - Redis cache key prefix and TTL
 - `mongodb`
@@ -125,35 +122,27 @@ Important config areas:
 - `downstream`
   - degraded/unhealthy thresholds, hysteresis, observe-only mode, decision cooldown
 - `scaling`
-  - tick interval, lag thresholds, CPU thresholds, queue growth window
+  - tick interval, lag thresholds, queue growth window
+- `nomad`
+  - api address, job name, target task group, max scale limit
 
 ## Running locally
 
-### With Docker
+1. Start your local Nomad agent.
+2. Start RabbitMQ, MongoDB, and Redis.
+3. Submit the Nomad job to deploy both the Controller and the initial Worker allocation:
 
 ```bash
-docker compose up --build
+nomad job run nomad.job.hcl
 ```
 
-This starts:
-
-- Kafka
-- Kafka topic initialization
-- MongoDB
-- Redis
-- the autoscaler service
-
-The autoscaler API will be available on `http://localhost:8080`.
-
-### Without Docker
-
-1. start Kafka, MongoDB, and Redis yourself
-2. copy `config.example.yaml` to `config.yaml`
-3. adjust addresses if needed
-4. run:
+Alternatively, you can compile and run the binaries directly for testing outside of Nomad:
 
 ```bash
-go run ./cmd/autoscaler
+go build -o worker.exe ./cmd/worker
+go build -o controller.exe ./cmd/controller
+./worker.exe
+./controller.exe
 ```
 
 ## Event model
@@ -177,50 +166,32 @@ If `id` or `timestamp` is omitted, the API fills them in automatically.
 
 ```mermaid
 flowchart TD
-    Start["Tick interval"] --> Inputs["Collect lag, queue trend, throughput, CPU, downstream state"]
+    Start["Tick interval"] --> Inputs["Collect lag, queue trend, downstream state"]
     Inputs --> Critical{"Critical downstream unhealthy<br/>and lag very high?"}
     Critical -- Yes --> Backpressure["Enable backpressure"]
-    Critical -- No --> Protected{"Lag high and workers falling behind<br/>but downstream degraded/unhealthy?"}
+    Critical -- No --> Protected{"Lag high and growing<br/>but downstream degraded/unhealthy?"}
     Protected -- Yes --> Suppress["Suppress scale-up"]
-    Protected -- No --> ScaleUp{"Lag high, queue growing,<br/>and CPU healthy enough?"}
-    ScaleUp -- Yes --> Up["Scale up workers and batch size"]
-    ScaleUp -- No --> ScaleDown{"Lag low and workers keeping up?"}
-    ScaleDown -- Yes --> Down["Scale down workers and batch size"]
+    Protected -- No --> ScaleUp{"Lag high and queue growing?"}
+    ScaleUp -- Yes --> Up["Instruct Nomad to scale up"]
+    ScaleUp -- No --> ScaleDown{"Lag low and queue stable?"}
+    ScaleDown -- Yes --> Down["Instruct Nomad to scale down"]
     ScaleDown -- No --> None["No action"]
 ```
 
 The scaler uses:
 
-- Kafka consumer lag
+- RabbitMQ consumer lag
 - queue growth trend
-- incoming throughput
-- processed throughput
-- process CPU
 - downstream decision status
 
 Decision rules are policy-aware:
 
-- critical unhealthy downstream + very high growing lag + falling behind => `backpressure`
+- critical unhealthy downstream + very high growing lag => `backpressure`
 - protective or critical degraded/unhealthy downstream + high growing lag => suppress `scale_up`
-- low lag + stable queue + workers keeping up => `scale_down`
-
-## Internal status
-
-`GET /internal/status` returns the latest computed runtime snapshot, including:
-
-- queue lag
-- CPU usage
-- backpressure state
-- workers and batch size
-- latest throughput snapshot
-- chosen decision action and reason
-- selected downstream decision status
-- all known downstream statuses
-
-This endpoint is intended for internal debugging and operator visibility.
+- low lag + stable queue => `scale_down`
 
 ## Notes
 
-- Metrics export is intentionally not included.
+- CPU usage has been explicitly removed from the decision engine to protect against infinite scaling in the event of memory leaks or application-level CPU loops.
 - Downstream identity is explicit. The code decides which dependency is being measured by naming it at the call site.
-- The current project uses MongoDB and Redis as real downstreams out of the box, and the downstream framework can be extended for other databases or APIs later.
+- The Controller is designed as a strict singleton to completely eliminate race conditions without the need for distributed locks like Redis or Consul.
